@@ -22,7 +22,7 @@ const copied = ref<string | null>(null);
 async function login(): Promise<void> {
   try {
     await bzr.login();
-    if (route.redirectedFrom && route.redirectedFrom.name) {
+    if (bzr.isLoggedIn() && route.redirectedFrom && route.redirectedFrom.name) {
       router.push(route.redirectedFrom);
     }
   } catch (e: unknown) {
