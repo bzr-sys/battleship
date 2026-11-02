@@ -33,17 +33,6 @@ export type Half = Doc & {
   linkUrl?: string;
 };
 
-/** A game from before the split into halves. It can't be continued. */
-export type OldGame = Doc & {
-  type: "hosted" | "invited" | "link";
-  visible: boolean;
-  lastActive: string;
-  guestId?: string;
-  hostId?: string;
-};
-
-export type Game = Half | OldGame;
-
 /** What the reveal showed, checked against the copy of the opponent's moves. */
 export type RevealCheck = {
   hash: boolean;

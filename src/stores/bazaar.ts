@@ -2,7 +2,7 @@ import { ref, computed, reactive, watch } from "vue";
 import type { ComputedRef } from "vue";
 import { defineStore } from "pinia";
 import { bzr } from "@/bazaar";
-import type { Game, Half, OldGame, Secret, SecretRound } from "@/types/index";
+import type { Half, Secret, SecretRound } from "@/types/index";
 import { loggedShotResult, perspective, roundOf, roundOver, shotsDue } from "@/game";
 import type { Perspective, Phase } from "@/game";
 import { checkReveal, commitment, mergeCopy, newSalt } from "@/fairplay";
@@ -13,8 +13,6 @@ import type { DeepPartial, User, GrantedPermission } from "@bzr/bazaar";
 export const GAMES_COLLECTION_NAME = "games";
 export const SECRETS_COLLECTION_NAME = "secrets";
 export const HALF_GAME_TYPE = "half";
-
-const isHalf = (g: Game | null | undefined): g is Half => g?.type === HALF_GAME_TYPE;
 
 /** A game as the signed-in user sees it. */
 export type Engagement = {
@@ -39,7 +37,7 @@ export const useBazaarStore = defineStore("bazaar", () => {
     handle: "",
     name: "",
   } as User);
-  const games = ref([] as Game[]);
+  const games = ref([] as Half[]);
   const secrets = ref([] as Secret[]);
   const people = reactive({} as Record<string, User | null>);
   const now = ref(Date.now());
@@ -49,7 +47,7 @@ export const useBazaarStore = defineStore("bazaar", () => {
   const opponents = reactive({} as Record<string, Half | null>);
   const watching = new Set<string>();
 
-  const gamesCollection = bzr.collection<Game>(GAMES_COLLECTION_NAME);
+  const gamesCollection = bzr.collection<Half>(GAMES_COLLECTION_NAME);
   const secretsCollection = bzr.collection<Secret>(SECRETS_COLLECTION_NAME);
 
   function ensurePerson(userId: string) {
@@ -91,7 +89,7 @@ export const useBazaarStore = defineStore("bazaar", () => {
   const engagements: ComputedRef<Engagement[]> = computed(() => {
     const out: Engagement[] = [];
     for (const half of games.value) {
-      if (!isHalf(half) || !half.visible || !half.opponentId) continue;
+      if (!half.visible || !half.opponentId) continue;
       const theirs = opponents[half.id];
       const secret = secrets.value.find((s) => s.id === half.id);
       const view = perspective(half, theirs, secret, now.value);
@@ -110,19 +108,13 @@ export const useBazaarStore = defineStore("bazaar", () => {
     return out;
   });
 
-  const links = computed(() => games.value.filter((g) => isHalf(g) && g.visible && !g.opponentId) as Half[]);
-
-  const oldGames = computed(() => games.value.filter((g) => g && !isHalf(g) && g.visible) as OldGame[]);
+  const links = computed(() => games.value.filter((g) => g.visible && !g.opponentId));
 
   // Keep opponent names loaded for everything in the lobby.
   watch(
-    () => games.value.map((g) => g && `${g.id}:${g.type}:${isHalf(g) ? g.opponentId : ""}`).join(),
+    () => games.value.map((g) => g.opponentId).join(),
     () => {
-      for (const g of games.value) {
-        if (!g) continue;
-        if (isHalf(g)) ensurePerson(g.opponentId ?? "");
-        else ensurePerson(g.guestId ?? g.hostId ?? "");
-      }
+      for (const g of games.value) ensurePerson(g.opponentId ?? "");
     },
   );
 
@@ -162,17 +154,16 @@ export const useBazaarStore = defineStore("bazaar", () => {
     const gameId = g.permission?.filter?.id;
     if (g.permission?.collectionName !== GAMES_COLLECTION_NAME || typeof gameId !== "string") return;
     try {
-      const mine = games.value.find((x) => x?.id === gameId);
-      if (mine && !isHalf(mine)) return;
-      if (isHalf(mine)) {
+      const mine = games.value.find((x) => x.id === gameId);
+      if (mine) {
         // The opponent's half for a game of ours. On a link, whoever got in is the opponent.
         if (mine.opponentId && mine.opponentId !== g.ownerId) return;
         if (!mine.opponentId) await gamesCollection.updateOne(gameId, { opponentId: g.ownerId, lastActive: "$now" });
       } else {
         const ctx = await bzr.createContext({ ownerId: g.ownerId });
-        const host = await ctx.collection<Game>(GAMES_COLLECTION_NAME).getOne(gameId);
-        // A game from before the split, or meant for someone else.
-        if (!isHalf(host) || !host.isHost || (host.opponentId && host.opponentId !== user.value.id)) return;
+        const host = await ctx.collection<Half>(GAMES_COLLECTION_NAME).getOne(gameId);
+        // Not a game to join, or meant for someone else.
+        if (!host?.isHost || (host.opponentId && host.opponentId !== user.value.id)) return;
         await join(gameId, g.ownerId);
       }
       watchOpponent(gameId, g.ownerId);
@@ -263,7 +254,8 @@ export const useBazaarStore = defineStore("bazaar", () => {
         authenticated.value = true;
 
         await secretsCollection.subscribeAll({}, arrayMirrorSubscribeListener(secrets.value));
-        await gamesCollection.subscribeAll({}, arrayMirrorSubscribeListener(games.value));
+        // Only this format: older docs in the collection are ignored.
+        await gamesCollection.subscribeAll({ type: HALF_GAME_TYPE }, arrayMirrorSubscribeListener(games.value));
 
         await bzr.permissions.granted.subscribe(
           { collectionName: GAMES_COLLECTION_NAME },
@@ -344,7 +336,7 @@ export const useBazaarStore = defineStore("bazaar", () => {
   }
 
   async function writeHalf(id: string, update: DeepPartial<Half>) {
-    await gamesCollection.updateOne(id, { ...update, lastActive: "$now" } as DeepPartial<Game>);
+    await gamesCollection.updateOne(id, { ...update, lastActive: "$now" });
   }
 
   /** Keeps the fleet private and publishes only its hash. */
@@ -374,7 +366,6 @@ export const useBazaarStore = defineStore("bazaar", () => {
     people,
     engagements,
     links,
-    oldGames,
     autoSignIn,
     createGame,
     createLink,

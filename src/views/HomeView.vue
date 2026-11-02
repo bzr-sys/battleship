@@ -4,7 +4,6 @@ import { useRouter, useRoute } from "vue-router";
 
 import { useBazaarStore } from "@/stores/bazaar";
 import type { Engagement } from "@/stores/bazaar";
-import type { OldGame } from "@/types";
 import { bzr } from "@/bazaar";
 import { ago, coord, firingOrder, pad2 } from "@/game";
 
@@ -236,11 +235,6 @@ function rematch(e: Engagement) {
   });
 }
 
-function oldOpponent(g: OldGame) {
-  const id = g.guestId ?? g.hostId;
-  return id ? (store.people[id]?.name ?? "Unknown player") : "Invite link";
-}
-
 function hide(id: string) {
   run(`hide-${id}`, () => store.hideGame(id));
 }
@@ -420,27 +414,6 @@ function hide(id: string) {
             <span class="text-[13px] text-sonar-muted"
               >No one has joined yet · opened {{ ago(link.lastActive, now) }}</span
             >
-          </div>
-        </section>
-
-        <section v-if="store.oldGames.length" class="panel flex flex-col gap-2">
-          <h2 class="hd m-0 text-[17px] text-sonar-bright">Old games · {{ store.oldGames.length }}</h2>
-          <p class="m-0 text-[13px] text-sonar-muted">
-            Started before fleets were kept private, so they can't be continued. Start a new game instead.
-          </p>
-          <div v-for="g in store.oldGames" :key="g.id" class="flex items-center gap-2.5">
-            <span class="min-w-0 flex-1 truncate">{{ oldOpponent(g) }}</span>
-            <button
-              class="icon-btn h-9 w-9"
-              :aria-label="`Hide old game with ${oldOpponent(g)}`"
-              title="Hide"
-              :disabled="busy !== null"
-              @click="hide(g.id)"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M5 12h14"></path>
-              </svg>
-            </button>
           </div>
         </section>
 

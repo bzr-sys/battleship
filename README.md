@@ -47,8 +47,6 @@ Nothing but the two clients runs a game, so nothing can force a client to be hon
 
 A detected cheat or forfeit counts as a win for the honest player, on their client only. There's no shared result, so the two series scores can differ.
 
-Games from before this design are listed under **Old games** in the lobby. They can be hidden but not continued, and their scores no longer count.
-
 ## Tech stack
 
 Vue 3, Vite, Pinia, Vue Router (hash history), Tailwind CSS, and the [`@bzr/bazaar`](https://www.npmjs.com/package/@bzr/bazaar) SDK.
