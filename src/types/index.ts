@@ -1,61 +1,74 @@
 import type { Doc } from "@bzr/bazaar";
 
-type GameCommon = Doc & {
+export type ShotResult = { kind: "miss" | "hit" | "sunk"; ship?: string };
+
+/** One player's moves in one game of a series. */
+export type Round = {
+  /** SHA-256 of fleet + salt, published before the first shot. */
+  commit?: string;
+  /** Squares fired at (row * 10 + column), in order. */
+  shots: number[];
+  /** Answers to the opponent's shots, in order. */
+  answers: ShotResult[];
+  /** Published when the game is over. */
+  reveal?: { fleet: number[][]; salt: string };
+};
+
+/**
+ * A player's half of a game, in their own `games` collection. The opponent has
+ * read access to this one doc and nobody but its owner can write it. Both
+ * halves of a game have the same ID.
+ */
+export type Half = Doc & {
+  type: "half";
   visible: boolean;
   lastActive: string;
+  isHost: boolean;
+  /** Unset on an invite link nobody has joined yet. */
+  opponentId?: string;
+  /** The game of the series this player is on. */
+  round: number;
+  rounds: Record<number, Round>;
+  linkId?: string;
+  linkUrl?: string;
 };
 
-export type HostedGame = GameCommon & {
-  type: "hosted";
-  guestId: string;
-  config: GameConfig;
-  highscore: Highscore;
-  status: GameStatus;
+/** A game from before the split into halves. It can't be continued. */
+export type OldGame = Doc & {
+  type: "hosted" | "invited" | "link";
+  visible: boolean;
+  lastActive: string;
+  guestId?: string;
+  hostId?: string;
 };
 
-export type InvitedGame = GameCommon & {
-  type: "invited";
-  hostId: string;
-  grantedPermissionId: string;
-  gameId: string;
+export type Game = Half | OldGame;
+
+/** What the reveal showed, checked against the copy of the opponent's moves. */
+export type RevealCheck = {
+  hash: boolean;
+  layout: boolean;
+  /** How many answers were checked. */
+  answers: number;
+  /** The answers that don't match the revealed fleet. */
+  lies: string[];
 };
 
-export type GameLink = GameCommon & {
-  type: "link";
-  linkId: string;
-  linkUrl: string;
+export type SecretRound = {
+  fleet?: number[][];
+  salt?: string;
+  /** The opponent's moves as first seen. Later edits never overwrite them. */
+  copy?: Round;
+  /** Where the opponent's half stopped matching the copy. */
+  edits?: string[];
+  check?: RevealCheck;
+  /** When this client saw the game end. */
+  overAt?: string;
 };
 
-export type Game = HostedGame | InvitedGame | GameLink;
-
-export type GameType = "hosted" | "invited" | "link";
-
-export type GameConfig = {
-  hostUnset: string[];
-  guestUnset: string[];
-  hostShips: boolean[][];
-  guestShips: boolean[][];
-  hostBombs: boolean[][];
-  guestBombs: boolean[][];
-  // Added with the Sonar redesign; games started before it lack them.
-  /** Each ship's squares (row * 10 + column), in the order of SHIPS in game.ts. */
-  hostFleet?: number[][];
-  guestFleet?: number[][];
-  /** Squares fired at, in order. */
-  hostShotLog?: number[];
-  guestShotLog?: number[];
-};
-
-export type Highscore = {
-  host: number;
-  guest: number;
-};
-
-export type GameStatus = {
-  currentTurn: string;
-  hostSetup: boolean;
-  guestSetup: boolean;
-  finished: boolean;
+/** A player's private data for a game, in their own `secrets` collection, with no grant. Same ID as the game. */
+export type Secret = Doc & {
+  rounds: Record<number, SecretRound>;
 };
 
 export type SignUpIn = {

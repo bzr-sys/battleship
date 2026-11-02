@@ -1,6 +1,6 @@
 # Bazaar Battleship
 
-The classic two-player Battleship game, built as a [Bazaar](https://bzr.dev) example app. There is no app backend: every game is stored in its host's own Bazaar database and shared with the opponent through Bazaar permissions.
+The classic two-player Battleship game, built as a [Bazaar](https://bzr.dev) example app. There is no app backend and no referee: each player keeps their half of a game in their own Bazaar database and shares it read-only with the opponent. See [Fair play](#fair-play).
 
 **Live app: https://bzr-sys.github.io/battleship/**
 
@@ -12,19 +12,42 @@ The classic two-player Battleship game, built as a [Bazaar](https://bzr.dev) exa
 - A shot log, last-shot markers and a damage report show what was hit and sunk
 - Rematches keep a running series score per opponent
 - Games update live for both players, and the lobby shows whose turn it is in every game
+- Fleets stay hidden, and each client checks the other at the end: a shot stays pending until the target's client answers, and the screen says when a cheat is detected
 
 ## How it uses Bazaar
 
-| Bazaar feature        | Used for                                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------------------ |
-| Collections (`games`) | Each player keeps their games in their own `games` collection                                    |
-| Permissions           | The host grants the guest read/update access to that one game (`filter: { id: gameId }`)         |
-| Shareable links       | **Open an invite link** makes a single-use link that grants the same access to whoever opens it  |
-| Granted permissions   | The guest's app watches for new grants and adds the game to their list                           |
-| Contexts              | The guest reads and updates the game in the host's database, live in both the lobby and the game |
-| Subscriptions         | Both players get board changes in real time                                                      |
+| Bazaar feature          | Used for                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
+| Collections (`games`)   | Each player's half of a game: fleet hash, shots, answers, and at the end fleet and salt           |
+| Collections (`secrets`) | Private, no grant: the player's fleet and salt, and their own copy of the opponent's moves        |
+| Permissions             | Each player grants the other `read` on their half (`filter: { id: gameId }`). Nobody has `update` |
+| Shareable links         | **Open an invite link** makes a single-use link with `read` on the host's half                    |
+| Granted permissions     | A grant from the host makes the guest create their half and grant `read` back                     |
+| Contexts                | Each client reads the opponent's half from the opponent's database                                |
+| Subscriptions           | Both players get moves in real time                                                               |
 
-The Bazaar setup is in `src/bazaar.ts`, the game rules in `src/game.ts`, the data handling in `src/stores/bazaar.ts`, and the screens in `src/views/` and `src/components/`.
+The Bazaar setup is in `src/bazaar.ts`, the game rules in `src/game.ts`, the checks in `src/fairplay.ts`, the data handling in `src/stores/bazaar.ts`, and the screens in `src/views/` and `src/components/`.
+
+## Fair play
+
+Nothing but the two clients runs a game, so nothing can force a client to be honest. The design makes cheating either impossible or visible:
+
+1. Before the first shot, each player publishes `SHA-256(fleet + salt)`. The fleet and salt stay in `secrets`.
+2. The target's client answers each shot with hit, miss or sunk, on its own, whichever screen is open. Until it does, the shot is pending.
+3. When the game ends, both publish fleet and salt. Each client checks the hash, a legal layout and every answer it got.
+4. Each client copies the opponent's moves to `secrets` as it sees them, and flags any later difference.
+
+| Cheat                        | Result                                                                                 |
+| ---------------------------- | -------------------------------------------------------------------------------------- |
+| Peeking at the other's fleet | Prevented: no grant on `secrets`, and only a hash in `games`                           |
+| Changing the other's moves   | Prevented: each half has one writer                                                    |
+| Editing your own past moves  | Detected, as soon as the other client sees it. Undoing the edit doesn't clear the flag |
+| Lying about a hit            | Detected at the end, not prevented                                                     |
+| Refusing to reveal           | A forfeit on the other client after an hour, unenforceable. A later reveal is checked  |
+
+A detected cheat or forfeit counts as a win for the honest player, on their client only. There's no shared result, so the two series scores can differ.
+
+Games from before this design are listed under **Old games** in the lobby. They can be hidden but not continued, and their scores no longer count.
 
 ## Tech stack
 

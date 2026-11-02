@@ -4,8 +4,9 @@ import { useRouter, useRoute } from "vue-router";
 
 import { useBazaarStore } from "@/stores/bazaar";
 import type { Engagement } from "@/stores/bazaar";
+import type { OldGame } from "@/types";
 import { bzr } from "@/bazaar";
-import { ago, coord, loggedShotResult, pad2, shotCount } from "@/game";
+import { ago, coord, firingOrder, pad2 } from "@/game";
 
 const store = useBazaarStore();
 const router = useRouter();
@@ -78,7 +79,7 @@ type Row = {
   name: string;
   handle: string;
   status: string;
-  tone: "amber" | "cyan" | "muted";
+  tone: "amber" | "cyan" | "muted" | "flare";
   marker: "dot" | "ring" | "square" | "none";
   detail: string;
   series: string;
@@ -93,38 +94,33 @@ const rows = computed<Row[]>(() =>
       const name = person?.name || "Unknown player";
       const first = name.split(" ")[0].toUpperCase();
       const v = e.view;
-      const when = ago(e.game?.lastActive ?? e.entry.lastActive, now.value);
+      const when = ago(e.lastActive, now.value);
       const base = {
         e,
         name,
         handle: person?.handle ? `@${person.handle}` : "",
-        series: v ? `${pad2(v.myScore)}–${pad2(v.theirScore)}` : "--–--",
+        series: `${pad2(v.myScore)}–${pad2(v.theirScore)}`,
       };
-      if (e.game === null) {
+      if (e.theirs === null) {
         return {
           ...base,
           status: "Unavailable",
           tone: "muted",
           marker: "none",
-          detail: "The host removed this game",
+          detail: `${first} removed this game`,
           rank: 4,
         };
       }
-      if (e.game === undefined || !v) {
-        return { ...base, status: "Loading", tone: "muted", marker: "none", detail: when, rank: 2 };
-      }
-      // The latest shot: theirs if it is now my turn, otherwise mine.
+      // The latest shot of either player.
+      const last = firingOrder(v).pop();
       let event = "";
-      const theirsLast = v.myTurn || e.phase === "lost";
-      const log = theirsLast ? v.theirLog : v.myLog;
-      if (log.length && e.phase !== "deploy" && e.phase !== "awaiting-deploy") {
-        const r = theirsLast
-          ? loggedShotResult(v.myShips, v.myFleet, log, log.length - 1)
-          : loggedShotResult(v.theirShips, v.theirFleet, log, log.length - 1);
-        const what = r.kind === "sunk" ? `sank ${r.ship}` : r.kind;
-        event = `${theirsLast ? first : "YOU"} ${coord(log[log.length - 1])} ${what}`;
+      if (last) {
+        const r = last.result;
+        const what = !r ? "pending" : r.kind === "sunk" ? `sank ${r.ship}` : r.kind;
+        event = `${last.mine ? "YOU" : first} ${coord(last.at)} ${what}`;
       }
-      const detail = [when, event].filter(Boolean).join(" · ");
+      const flagged = v.problems.length ? "cheat detected" : "";
+      const detail = [when, event, flagged].filter(Boolean).join(" · ");
       switch (e.phase) {
         case "deploy":
           return {
@@ -156,6 +152,16 @@ const rows = computed<Row[]>(() =>
             action: { label: "Open", primary: false },
             rank: 1,
           };
+        case "awaiting-answer":
+          return {
+            ...base,
+            status: "Shot pending",
+            tone: "cyan",
+            marker: "dot",
+            detail,
+            action: { label: "Monitor", primary: false },
+            rank: 1,
+          };
         case "incoming":
           return {
             ...base,
@@ -166,10 +172,40 @@ const rows = computed<Row[]>(() =>
             action: { label: "Monitor", primary: false },
             rank: 1,
           };
+        case "reveal":
+          return {
+            ...base,
+            status: "Verifying",
+            tone: "cyan",
+            marker: "dot",
+            detail: [when, `awaiting ${first}'s reveal`].join(" · "),
+            action: { label: "Open", primary: false },
+            rank: 1,
+          };
+        case "cheat":
+          return {
+            ...base,
+            status: "Cheat detected",
+            tone: "flare",
+            marker: "square",
+            detail,
+            action: { label: "Rematch", primary: false, rematch: true },
+            rank: 3,
+          };
+        case "forfeit":
+          return {
+            ...base,
+            status: "Victory · forfeit",
+            tone: "flare",
+            marker: "square",
+            detail: [when, `${first} never revealed`].join(" · "),
+            action: { label: "Rematch", primary: false, rematch: true },
+            rank: 3,
+          };
         default:
           return {
             ...base,
-            status: `${e.phase === "won" ? "Victory" : "Defeat"} · ${shotCount(v.myShots)} shots`,
+            status: `${e.phase === "won" ? "Victory" : "Defeat"} · ${v.myLog.length} shots`,
             tone: "muted",
             marker: "square",
             detail,
@@ -178,12 +214,7 @@ const rows = computed<Row[]>(() =>
           };
       }
     })
-    .sort(
-      (a, b) =>
-        a.rank - b.rank ||
-        Date.parse(b.e.game?.lastActive ?? b.e.entry.lastActive) -
-          Date.parse(a.e.game?.lastActive ?? a.e.entry.lastActive),
-    ),
+    .sort((a, b) => a.rank - b.rank || Date.parse(b.e.lastActive) - Date.parse(a.e.lastActive)),
 );
 
 const waitingOnYou = computed(() => rows.value.filter((r) => r.rank === 0).length);
@@ -192,10 +223,8 @@ const record = computed(() => {
   let wins = 0;
   let losses = 0;
   for (const e of store.engagements) {
-    if (e.view) {
-      wins += e.view.myScore;
-      losses += e.view.theirScore;
-    }
+    wins += e.view.myScore;
+    losses += e.view.theirScore;
   }
   return { wins, losses, opponents: new Set(store.engagements.map((e) => e.opponentId)).size };
 });
@@ -205,6 +234,11 @@ function rematch(e: Engagement) {
     await store.rematch(e);
     router.push({ name: "game", params: { gameId: e.id } });
   });
+}
+
+function oldOpponent(g: OldGame) {
+  const id = g.guestId ?? g.hostId;
+  return id ? (store.people[id]?.name ?? "Unknown player") : "Invite link";
 }
 
 function hide(id: string) {
@@ -257,14 +291,15 @@ function hide(id: string) {
           >
             <div class="flex min-w-0 flex-col">
               <span class="truncate font-semibold text-sonar-bright">{{ row.name }}</span>
-              <span class="text-xs text-sonar-dim">{{ row.handle }}</span>
+              <span class="truncate text-xs text-sonar-dim">{{ row.handle }}</span>
             </div>
             <span
-              class="order-3 inline-flex items-center gap-2 uppercase md:order-none"
+              class="order-3 col-span-2 inline-flex items-center gap-2 uppercase md:order-none md:col-span-1"
               :class="{
                 'text-sonar-amber': row.tone === 'amber',
                 'text-sonar-cyan': row.tone === 'cyan',
                 'text-sonar-muted': row.tone === 'muted',
+                'text-sonar-flare-text': row.tone === 'flare',
               }"
             >
               <span
@@ -273,10 +308,17 @@ function hide(id: string) {
                 :class="row.tone === 'amber' ? 'bg-sonar-amber shadow-[0_0_8px_#FFB347]' : 'bg-sonar-edge'"
               ></span>
               <span v-else-if="row.marker === 'ring'" class="h-2 w-2 rounded-full border-2 border-sonar-amber"></span>
-              <span v-else-if="row.marker === 'square'" class="h-2 w-2 bg-sonar-muted"></span>
+              <span
+                v-else-if="row.marker === 'square'"
+                class="h-2 w-2 shrink-0"
+                :class="row.tone === 'flare' ? 'bg-sonar-flare' : 'bg-sonar-muted'"
+              ></span>
               {{ row.status }}
             </span>
-            <span class="order-4 text-sonar-bright md:order-none" :aria-label="`Series ${row.series}`">
+            <span
+              class="order-4 col-span-2 text-sonar-bright md:order-none md:col-span-1"
+              :aria-label="`Series ${row.series}`"
+            >
               <span class="label md:hidden">Series </span>{{ row.series }}
             </span>
             <span class="order-5 col-span-2 text-sonar-muted md:order-none md:col-span-1">{{ row.detail }}</span>
@@ -359,7 +401,7 @@ function hide(id: string) {
                 class="btn-outline min-h-[36px] px-3"
                 :disabled="!link.linkUrl"
                 :aria-label="`Copy invite link ${link.linkUrl ?? ''}`"
-                @click="copy(link.id, link.linkUrl)"
+                @click="copy(link.id, link.linkUrl ?? '')"
               >
                 {{ copied === link.id ? "Copied" : "Copy" }}
               </button>
@@ -378,6 +420,27 @@ function hide(id: string) {
             <span class="text-[13px] text-sonar-muted"
               >No one has joined yet · opened {{ ago(link.lastActive, now) }}</span
             >
+          </div>
+        </section>
+
+        <section v-if="store.oldGames.length" class="panel flex flex-col gap-2">
+          <h2 class="hd m-0 text-[17px] text-sonar-bright">Old games · {{ store.oldGames.length }}</h2>
+          <p class="m-0 text-[13px] text-sonar-muted">
+            Started before fleets were kept private, so they can't be continued. Start a new game instead.
+          </p>
+          <div v-for="g in store.oldGames" :key="g.id" class="flex items-center gap-2.5">
+            <span class="min-w-0 flex-1 truncate">{{ oldOpponent(g) }}</span>
+            <button
+              class="icon-btn h-9 w-9"
+              :aria-label="`Hide old game with ${oldOpponent(g)}`"
+              title="Hide"
+              :disabled="busy !== null"
+              @click="hide(g.id)"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 12h14"></path>
+              </svg>
+            </button>
           </div>
         </section>
 

@@ -2,31 +2,33 @@ import { ref, computed, reactive, watch } from "vue";
 import type { ComputedRef } from "vue";
 import { defineStore } from "pinia";
 import { bzr } from "@/bazaar";
-import type { Game, GameLink, GameType, HostedGame, InvitedGame } from "@/types/index";
-import { freshGameConfig, perspective, phaseOf } from "@/game";
+import type { Game, Half, OldGame, Secret, SecretRound } from "@/types/index";
+import { loggedShotResult, perspective, roundOf, roundOver, shotsDue } from "@/game";
 import type { Perspective, Phase } from "@/game";
+import { checkReveal, commitment, mergeCopy, newSalt } from "@/fairplay";
 
 import { arrayMirrorSubscribeListener, GranteeType, PermissionType } from "@bzr/bazaar";
-import type { CollectionAPI, DeepPartial, User, GrantedPermission } from "@bzr/bazaar";
+import type { DeepPartial, User, GrantedPermission } from "@bzr/bazaar";
 
 export const GAMES_COLLECTION_NAME = "games";
-export const HOSTED_GAME_TYPE = "hosted";
-export const INVITED_GAME_TYPE = "invited";
-export const LINK_GAME_TYPE = "link";
+export const SECRETS_COLLECTION_NAME = "secrets";
+export const HALF_GAME_TYPE = "half";
 
-export { freshGameConfig };
+const isHalf = (g: Game | null | undefined): g is Half => g?.type === HALF_GAME_TYPE;
 
-/** A game as the signed-in user sees it, whichever database it lives in. */
+/** A game as the signed-in user sees it. */
 export type Engagement = {
-  /** The entry's ID in the user's own games collection (used in the URL). */
+  /** The ID of both players' halves (used in the URL). */
   id: string;
-  entry: HostedGame | InvitedGame;
-  /** The live game: undefined while loading, null if it can no longer be read. */
-  game: HostedGame | null | undefined;
+  half: Half;
+  /** The opponent's half: undefined until it can be read, null if it was removed. */
+  theirs: Half | null | undefined;
+  secret: Secret | undefined;
   isHost: boolean;
   opponentId: string;
-  view?: Perspective;
-  phase?: Phase;
+  lastActive: string;
+  view: Perspective;
+  phase: Phase;
 };
 
 export const useBazaarStore = defineStore("bazaar", () => {
@@ -38,13 +40,17 @@ export const useBazaarStore = defineStore("bazaar", () => {
     name: "",
   } as User);
   const games = ref([] as Game[]);
+  const secrets = ref([] as Secret[]);
   const people = reactive({} as Record<string, User | null>);
+  const now = ref(Date.now());
+  setInterval(() => (now.value = Date.now()), 30_000);
 
-  // Invited games live in the host's database: entry ID -> live copy.
-  const remote = reactive({} as Record<string, HostedGame | null>);
-  const remoteCollections = new Map<string, CollectionAPI<HostedGame>>();
+  // The opponents' halves, from their databases: game ID -> live copy.
+  const opponents = reactive({} as Record<string, Half | null>);
+  const watching = new Set<string>();
 
   const gamesCollection = bzr.collection<Game>(GAMES_COLLECTION_NAME);
+  const secretsCollection = bzr.collection<Secret>(SECRETS_COLLECTION_NAME);
 
   function ensurePerson(userId: string) {
     if (!userId || userId in people) return;
@@ -57,122 +63,195 @@ export const useBazaarStore = defineStore("bazaar", () => {
       .catch((err) => console.log("Could not load user", userId, err));
   }
 
-  async function watchRemote(entry: InvitedGame) {
-    if (remoteCollections.has(entry.id)) return;
+  async function watchOpponent(gameId: string, ownerId: string) {
+    if (watching.has(gameId)) return;
+    watching.add(gameId);
     try {
-      const ctx = await bzr.createContext({ ownerId: entry.hostId });
-      const c = ctx.collection<HostedGame>(GAMES_COLLECTION_NAME);
-      remoteCollections.set(entry.id, c);
-      await c.subscribeOne(entry.gameId, {
+      const ctx = await bzr.createContext({ ownerId });
+      await ctx.collection<Half>(GAMES_COLLECTION_NAME).subscribeOne(gameId, {
         onInitial: (doc) => {
-          remote[entry.id] = doc;
+          if (doc) opponents[gameId] = doc;
         },
         onAdd: (doc) => {
-          remote[entry.id] = doc;
+          opponents[gameId] = doc;
         },
         onChange: (_old, doc) => {
-          remote[entry.id] = doc;
+          opponents[gameId] = doc;
         },
         onDelete: () => {
-          remote[entry.id] = null;
+          opponents[gameId] = null;
         },
       });
-      if (!(entry.id in remote)) remote[entry.id] = null;
     } catch (err) {
-      console.log("Could not load game from", entry.hostId, err);
-      remote[entry.id] = null;
+      watching.delete(gameId);
+      console.log("Could not load game from", ownerId, err);
     }
   }
 
   const engagements: ComputedRef<Engagement[]> = computed(() => {
     const out: Engagement[] = [];
-    for (const g of games.value) {
-      if (!g || !g.visible) continue;
-      if (g.type === HOSTED_GAME_TYPE) {
-        out.push({ id: g.id, entry: g, game: g, isHost: true, opponentId: g.guestId });
-      } else if (g.type === INVITED_GAME_TYPE) {
-        out.push({ id: g.id, entry: g, game: remote[g.id], isHost: false, opponentId: g.hostId });
-      }
-    }
-    for (const e of out) {
-      if (e.game && e.game.config && e.game.status) {
-        e.view = perspective(e.game, e.isHost, user.value.id);
-        e.phase = phaseOf(e.view);
-      }
+    for (const half of games.value) {
+      if (!isHalf(half) || !half.visible || !half.opponentId) continue;
+      const theirs = opponents[half.id];
+      const secret = secrets.value.find((s) => s.id === half.id);
+      const view = perspective(half, theirs, secret, now.value);
+      out.push({
+        id: half.id,
+        half,
+        theirs,
+        secret,
+        isHost: half.isHost,
+        opponentId: half.opponentId,
+        lastActive: theirs && theirs.lastActive > half.lastActive ? theirs.lastActive : half.lastActive,
+        view,
+        phase: view.phase,
+      });
     }
     return out;
   });
 
-  const links = computed(() => games.value.filter((g) => g && g.visible && g.type === LINK_GAME_TYPE) as GameLink[]);
+  const links = computed(() => games.value.filter((g) => isHalf(g) && g.visible && !g.opponentId) as Half[]);
 
-  // Keep remote games and opponent names loaded for everything in the lobby.
+  const oldGames = computed(() => games.value.filter((g) => g && !isHalf(g) && g.visible) as OldGame[]);
+
+  // Keep opponent names loaded for everything in the lobby.
   watch(
-    () => games.value.map((g) => g && `${g.id}:${g.type}`).join(),
+    () => games.value.map((g) => g && `${g.id}:${g.type}:${isHalf(g) ? g.opponentId : ""}`).join(),
     () => {
       for (const g of games.value) {
         if (!g) continue;
-        if (g.type === INVITED_GAME_TYPE) {
-          ensurePerson(g.hostId);
-          watchRemote(g);
-        } else if (g.type === HOSTED_GAME_TYPE) {
-          ensurePerson(g.guestId);
-        }
+        if (isHalf(g)) ensurePerson(g.opponentId ?? "");
+        else ensurePerson(g.guestId ?? g.hostId ?? "");
       }
     },
   );
 
-  const invitedGames = computed(() => games.value.filter((g) => g && g.type === INVITED_GAME_TYPE) as InvitedGame[]);
-
-  async function checkGranted(g: GrantedPermission) {
-    if (
-      g.permission &&
-      g.permission.collectionName === GAMES_COLLECTION_NAME &&
-      g.permission.filter &&
-      g.permission.filter.id &&
-      typeof g.permission.filter.id === "string"
-    ) {
-      let found = false;
-      for (const game of invitedGames.value) {
-        if (game.grantedPermissionId === g.id) {
-          found = true;
-          break;
-        }
+  // A guest makes their half when they get the host's grant.
+  const joining = new Set<string>();
+  async function join(gameId: string, hostId: string) {
+    if (joining.has(gameId)) return;
+    joining.add(gameId);
+    try {
+      if (!secrets.value.some((s) => s.id === gameId)) {
+        await secretsCollection.insertOne({ id: gameId, rounds: {} });
       }
-      if (!found) {
-        gamesCollection.insertOne({
-          type: INVITED_GAME_TYPE,
-          visible: true,
-          lastActive: "$now",
-          // invited game specific
-          hostId: g.ownerId,
-          grantedPermissionId: g.id,
-          gameId: g.permission.filter.id,
-        });
-      }
-      // Check if granted via link
-      const ctx = await bzr.createContext({ ownerId: g.ownerId });
-      const c = ctx.collection<Game>(GAMES_COLLECTION_NAME);
-      const game = await c.getOne(g.permission.filter.id as string);
-      if (game && game.type === LINK_GAME_TYPE) {
-        await c.updateOne(g.permission.filter.id as string, {
-          type: HOSTED_GAME_TYPE,
-          lastActive: "$now",
-          guestId: user.value.id,
-          config: freshGameConfig(),
-          highscore: {
-            host: 0,
-            guest: 0,
-          },
-          status: {
-            currentTurn: user.value.id,
-            hostSetup: false,
-            guestSetup: false,
-            finished: false,
-          },
-        });
-      }
+      // The grant first: if the insert fails, the next sign-in tries again.
+      await bzr.permissions.create({
+        collectionName: GAMES_COLLECTION_NAME,
+        granteeType: GranteeType.USER,
+        granteeId: hostId,
+        types: [PermissionType.READ],
+        filter: { id: gameId },
+      });
+      await gamesCollection.insertOne({
+        id: gameId,
+        type: HALF_GAME_TYPE,
+        visible: true,
+        lastActive: "$now",
+        isHost: false,
+        opponentId: hostId,
+        round: 1,
+        rounds: {},
+      });
+    } finally {
+      joining.delete(gameId);
     }
   }
+
+  async function checkGranted(g: GrantedPermission) {
+    const gameId = g.permission?.filter?.id;
+    if (g.permission?.collectionName !== GAMES_COLLECTION_NAME || typeof gameId !== "string") return;
+    try {
+      const mine = games.value.find((x) => x?.id === gameId);
+      if (mine && !isHalf(mine)) return;
+      if (isHalf(mine)) {
+        // The opponent's half for a game of ours. On a link, whoever got in is the opponent.
+        if (mine.opponentId && mine.opponentId !== g.ownerId) return;
+        if (!mine.opponentId) await gamesCollection.updateOne(gameId, { opponentId: g.ownerId, lastActive: "$now" });
+      } else {
+        const ctx = await bzr.createContext({ ownerId: g.ownerId });
+        const host = await ctx.collection<Game>(GAMES_COLLECTION_NAME).getOne(gameId);
+        // A game from before the split, or meant for someone else.
+        if (!isHalf(host) || !host.isHost || (host.opponentId && host.opponentId !== user.value.id)) return;
+        await join(gameId, g.ownerId);
+      }
+      watchOpponent(gameId, g.ownerId);
+    } catch (err) {
+      console.log("Could not process grant", g.id, err);
+    }
+  }
+
+  /**
+   * What this client does on its own whenever anything changes, whichever
+   * screen is open: copy the opponent's moves, check them, answer their shots,
+   * reveal at the end, follow them to a rematch.
+   */
+  async function settleOnce(e: Engagement) {
+    const { half, theirs, secret, id } = e;
+    if (!secret) return;
+    const r = half.round;
+    const updates: Record<number, SecretRound> = {};
+
+    if (theirs) {
+      const seen = new Set([...Object.keys(theirs.rounds ?? {}), ...Object.keys(secret.rounds ?? {})].map(Number));
+      for (const n of seen) {
+        const s = secret.rounds?.[n] ?? {};
+        const live = roundOf(theirs, n);
+        const { copy, edits } = mergeCopy(s.copy, live);
+        const allEdits = [...new Set([...(s.edits ?? []), ...edits])];
+        const u: SecretRound = {};
+        if (JSON.stringify(copy) !== JSON.stringify(s.copy ?? { shots: [], answers: [] })) u.copy = copy;
+        if (allEdits.length !== (s.edits ?? []).length) u.edits = allEdits;
+        // A reveal before the end is checked again as more answers come in.
+        const shots = roundOf(half, n).shots;
+        const answered = Math.min(copy.answers.length, shots.length);
+        if (copy.reveal && (!s.check || (s.check.layout && s.check.answers < answered))) {
+          u.check = await checkReveal(copy, shots);
+        }
+        if (Object.keys(u).length) updates[n] = u;
+      }
+    }
+
+    const my = roundOf(half, r);
+    const their = roundOf(theirs, r);
+    const fleet = secret.rounds?.[r]?.fleet;
+    const over = !!my.commit && !!their.commit && roundOver(my, their);
+    if (over && !secret.rounds?.[r]?.overAt) updates[r] = { ...updates[r], overAt: new Date().toISOString() };
+    if (Object.keys(updates).length) await secretsCollection.updateOne(id, { rounds: updates } as DeepPartial<Secret>);
+
+    if (!my.commit || !fleet) return;
+    const due = shotsDue(half, theirs, r);
+    if (!over && due.length > my.answers.length) {
+      const answers = due.map((_, n) => my.answers[n] ?? loggedShotResult(fleet, due, n));
+      await writeHalf(id, { rounds: { [r]: { answers } } });
+    } else if (over && !my.reveal) {
+      await writeHalf(id, { rounds: { [r]: { reveal: { fleet, salt: secret.rounds[r].salt! } } } });
+    } else if (over && theirs && theirs.round > r) {
+      await writeHalf(id, { round: theirs.round });
+    }
+  }
+
+  const settling = new Map<string, boolean>();
+  function settle(id: string) {
+    if (settling.has(id)) {
+      settling.set(id, true);
+      return;
+    }
+    const e = engagements.value.find((x) => x.id === id);
+    if (!e) return;
+    settling.set(id, false);
+    settleOnce(e)
+      .catch((err) => console.log("Could not update game", id, err))
+      .finally(() => {
+        const again = settling.get(id);
+        settling.delete(id);
+        if (again) settle(id);
+      });
+  }
+
+  watch(engagements, (list) => {
+    for (const e of list) settle(e.id);
+  });
 
   let signingIn = false;
   async function autoSignIn() {
@@ -183,6 +262,7 @@ export const useBazaarStore = defineStore("bazaar", () => {
         user.value = await bzr.social.getUser();
         authenticated.value = true;
 
+        await secretsCollection.subscribeAll({}, arrayMirrorSubscribeListener(secrets.value));
         await gamesCollection.subscribeAll({}, arrayMirrorSubscribeListener(games.value));
 
         await bzr.permissions.granted.subscribe(
@@ -212,31 +292,29 @@ export const useBazaarStore = defineStore("bazaar", () => {
     }
   }
 
-  async function createGame(userId: string) {
-    const game = {
-      type: HOSTED_GAME_TYPE,
+  /** Makes the host's half and its private doc. */
+  async function newHalf(opponentId?: string) {
+    const id = await secretsCollection.insertOne({ rounds: {} });
+    await gamesCollection.insertOne({
+      id,
+      type: HALF_GAME_TYPE,
       visible: true,
       lastActive: "$now",
-      // hosted game specific
-      guestId: userId,
-      config: freshGameConfig(),
-      highscore: {
-        host: 0,
-        guest: 0,
-      },
-      status: {
-        currentTurn: userId,
-        hostSetup: false,
-        guestSetup: false,
-        finished: false,
-      },
-    } as Omit<HostedGame, "id">;
-    const gameId = await gamesCollection.insertOne(game);
+      isHost: true,
+      ...(opponentId ? { opponentId } : {}),
+      round: 1,
+      rounds: {},
+    });
+    return id;
+  }
+
+  async function createGame(userId: string) {
+    const gameId = await newHalf(userId);
     await bzr.permissions.create({
       collectionName: GAMES_COLLECTION_NAME,
       granteeType: GranteeType.USER,
       granteeId: userId,
-      types: [PermissionType.READ, PermissionType.UPDATE],
+      types: [PermissionType.READ],
       filter: {
         id: gameId,
       },
@@ -245,16 +323,11 @@ export const useBazaarStore = defineStore("bazaar", () => {
   }
 
   async function createLink() {
-    const game = {
-      type: LINK_GAME_TYPE as GameType,
-      visible: true,
-      lastActive: "$now",
-    };
-    const gameId = await gamesCollection.insertOne(game);
+    const gameId = await newHalf();
     const link = await bzr.permissions.links.create(
       {
         collectionName: GAMES_COLLECTION_NAME,
-        types: [PermissionType.READ, PermissionType.UPDATE],
+        types: [PermissionType.READ],
         filter: {
           id: gameId,
         },
@@ -270,27 +343,27 @@ export const useBazaarStore = defineStore("bazaar", () => {
     await gamesCollection.updateOne(gameId, { visible: false });
   }
 
-  /** Writes a partial update to the game behind an engagement, wherever it lives. */
-  async function updateGame(e: Engagement, update: DeepPartial<HostedGame>) {
-    if (e.isHost) {
-      await gamesCollection.updateOne(e.entry.id, update as DeepPartial<Game>);
-      return;
-    }
-    const entry = e.entry as InvitedGame;
-    const c = remoteCollections.get(entry.id);
-    if (!c) throw new Error("This game is not loaded yet");
-    await c.updateOne(entry.gameId, update);
-    // Bring the invited entry to the top of the host's lobby order too.
-    gamesCollection.updateOne(entry.id, { lastActive: "$now" }).catch(() => {});
+  async function writeHalf(id: string, update: DeepPartial<Half>) {
+    await gamesCollection.updateOne(id, { ...update, lastActive: "$now" } as DeepPartial<Game>);
   }
 
-  /** Starts the next game of the series. The loser of the last one fires first. */
+  /** Keeps the fleet private and publishes only its hash. */
+  async function lockFleet(e: Engagement, fleet: number[][]) {
+    const r = e.half.round;
+    const salt = newSalt();
+    const commit = await commitment(fleet, salt);
+    await secretsCollection.updateOne(e.id, { rounds: { [r]: { fleet, salt } } } as DeepPartial<Secret>);
+    await writeHalf(e.id, { rounds: { [r]: { commit, shots: [], answers: [] } } });
+  }
+
+  async function fire(e: Engagement, i: number) {
+    const r = e.half.round;
+    await writeHalf(e.id, { rounds: { [r]: { shots: [...e.view.myLog, i] } } });
+  }
+
+  /** Starts the next game of the series. The opponent's client follows. */
   async function rematch(e: Engagement) {
-    await updateGame(e, {
-      lastActive: "$now",
-      config: freshGameConfig(),
-      status: { hostSetup: false, guestSetup: false, finished: false },
-    });
+    await writeHalf(e.id, { round: e.half.round + 1 });
   }
 
   return {
@@ -301,11 +374,13 @@ export const useBazaarStore = defineStore("bazaar", () => {
     people,
     engagements,
     links,
+    oldGames,
     autoSignIn,
     createGame,
     createLink,
     hideGame,
-    updateGame,
+    lockFleet,
+    fire,
     rematch,
   };
 });

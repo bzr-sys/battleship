@@ -105,13 +105,13 @@ const status = (k: number) => (selected.value === k ? "Armed" : placed.value[k] 
 
 <template>
   <div class="flex flex-wrap items-start gap-6">
-    <section class="panel flex flex-[1_1_280px] flex-col gap-2.5">
+    <section class="panel flex min-w-0 flex-[1_1_280px] flex-col gap-2.5 max-sm:px-3">
       <h2 class="hd m-0 mb-1 text-[17px] text-sonar-bright">Manifest</h2>
       <button
         v-for="(ship, k) in SHIPS"
         :key="ship.id"
         type="button"
-        class="flex min-h-[52px] w-full items-center gap-3 border px-3 py-2 text-left"
+        class="flex min-h-[52px] w-full items-center gap-2 border px-3 py-2 text-left sm:gap-3"
         :class="
           selected === k
             ? 'border-sonar-cyan bg-[#0A2A38] text-sonar-bright'
@@ -127,13 +127,15 @@ const status = (k: number) => (selected.value === k ? "Armed" : placed.value[k] 
           <span
             v-for="n in ship.size"
             :key="n"
-            class="h-3 w-3"
+            class="h-2.5 w-2.5 sm:h-3 sm:w-3"
             :class="
               selected === k ? 'bg-sonar-cyan shadow-[0_0_6px_#46E3D2]' : placed[k] ? 'bg-sonar-line' : 'bg-sonar-edge'
             "
           ></span>
         </span>
-        <span class="w-[76px] text-right text-xs uppercase tracking-[0.08em]">{{ status(k) }}</span>
+        <span class="w-[64px] text-right text-xs uppercase tracking-[0.04em] sm:w-[76px] sm:tracking-[0.08em]">{{
+          status(k)
+        }}</span>
       </button>
       <p class="m-0 mt-1.5 text-[13px] text-sonar-muted">
         Select a ship, then the square for its bow. <kbd>R</kbd> or Rotate turns it. Select a deployed ship to move it.
@@ -178,7 +180,10 @@ const status = (k: number) => (selected.value === k ? "Armed" : placed.value[k] 
       <button class="btn-amber" :disabled="remaining > 0 || busy" @click="lock()">
         {{ busy ? "Locking in…" : "Lock in fleet" }}
       </button>
-      <p class="m-0 text-[13px] text-sonar-muted">Once locked in, ships can't move until the next game.</p>
+      <p class="m-0 text-[13px] text-sonar-muted">
+        Once locked in, ships can't move until the next game. Only a hash of your fleet is shared; the fleet itself
+        stays private until the game ends.
+      </p>
     </aside>
   </div>
 </template>
