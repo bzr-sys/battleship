@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@bzr/bazaar':
-        specifier: 1.9.0
-        version: 1.9.0
+        specifier: 1.11.0
+        version: 1.11.0
       pinia:
         specifier: ^2.1.7
         version: 2.3.1(typescript@5.2.2)(vue@3.5.35(typescript@5.2.2))
@@ -22,8 +22,8 @@ importers:
         version: 4.6.4(vue@3.5.35(typescript@5.2.2))
     devDependencies:
       '@bzr/bazaar-mock':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: ^1.5.0
+        version: 1.5.0
       '@rushstack/eslint-patch':
         specifier: ^1.3.3
         version: 1.16.1
@@ -106,17 +106,17 @@ packages:
     resolution: {integrity: sha512-7R4mZocEt8nOIMCz9cQyxsrY7n/jhFW9YUW6Er9ySnBzH92wA0KmQUR1cT2encq2Lix6kRD2GyQRAmT1dWtwzg==}
     engines: {node: '>= 18'}
 
-  '@bzr/bazaar-mock@1.3.0':
-    resolution: {integrity: sha512-XyOdRqk24OuxE/9/tAhJx9Dw6FYIyGcHhpefIGu/gyUTVsYx3kuQe4hY8xrQTOzR/bc8wUJ8GCfezIkdWdgZ6Q==}
+  '@bzr/bazaar-mock@1.5.0':
+    resolution: {integrity: sha512-yg1NaOXTtXArWy277QZPO37cXPAA1jDVx2sbrMt6nra8j481YNNMNmm1hF/R6wPqBGf/WXShf9F4TtFm7RKLFA==}
     engines: {node: '>=24.0.0'}
     hasBin: true
 
-  '@bzr/bazaar-types@1.8.0':
-    resolution: {integrity: sha512-MPwJqDJ0dMmUtdFuHpvfW9PLkgaGgVtLGZO0DdtOzFuae+2UQ0Ei8SGT/bEUZGrXTRV8jSKYqm++pbPTSVQzSw==}
+  '@bzr/bazaar-types@1.9.0':
+    resolution: {integrity: sha512-M+lj1Qkc41Dgm55eIy7sbecvs9LLoM1THwqMNQ4Wf2KNLB9cNF7GViRJrpZFdPFAgnnKO37FAqsB3i9DhyPcrA==}
     engines: {node: '>=24.0.0'}
 
-  '@bzr/bazaar@1.9.0':
-    resolution: {integrity: sha512-4SqxiQYX9KycTGmk4ueMMCOcObh6AbhyKNSdHITbC5BsuwjK5kTTP7ue3HSFEo7Xh4aKjp8pNaOuqdppkJFJUQ==}
+  '@bzr/bazaar@1.11.0':
+    resolution: {integrity: sha512-jZF5eZuToBgRBwe0HOUykukJ5UtDGB/nHdx/o7AIMUQN7k/n2c+wxz6HYqJ0dnxBjF6rfEtdQHNWDs1fSwso6A==}
     engines: {node: '>=24.0.0'}
 
   '@esbuild/android-arm64@0.18.20':
@@ -1972,7 +1972,7 @@ snapshots:
 
   '@badgateway/oauth2-client@3.3.1': {}
 
-  '@bzr/bazaar-mock@1.3.0':
+  '@bzr/bazaar-mock@1.5.0':
     dependencies:
       '@node-oauth/oauth2-server': 5.3.0
       '@workos-inc/node': 9.3.1
@@ -1997,12 +1997,12 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@bzr/bazaar-types@1.8.0': {}
+  '@bzr/bazaar-types@1.9.0': {}
 
-  '@bzr/bazaar@1.9.0':
+  '@bzr/bazaar@1.11.0':
     dependencies:
       '@badgateway/oauth2-client': 3.3.1
-      '@bzr/bazaar-types': 1.8.0
+      '@bzr/bazaar-types': 1.9.0
       socket.io-client: 4.8.3
     transitivePeerDependencies:
       - bufferutil
