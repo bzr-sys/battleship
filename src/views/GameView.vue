@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import type { DeepPartial } from "@bzr/bazaar";
 
 import { useBazaarStore } from "@/stores/bazaar";
-import type { HostedGame } from "@/types";
-import { SIZE, allSunk, gridFromCells, isShot, pad2 } from "@/game";
+import { pad2 } from "@/game";
 import FleetSetup from "@/components/FleetSetup.vue";
 import BattleStation from "@/components/BattleStation.vue";
 
@@ -23,35 +21,24 @@ const searchTimer = setTimeout(() => (searching.value = false), 4000);
 onUnmounted(() => clearTimeout(searchTimer));
 
 const busy = ref(false);
-const pending = ref<number | null>(null);
+const sending = ref<number | null>(null);
 const error = ref("");
 
-// A pending shot is done once it shows up in the game.
+// A shot is sent once it shows up in my half.
 watch(
-  () => engagement.value?.view?.myShots,
-  (shots) => {
-    if (pending.value !== null && shots && isShot(shots, pending.value)) pending.value = null;
+  () => engagement.value?.view.myLog,
+  (log) => {
+    if (sending.value !== null && log?.includes(sending.value)) sending.value = null;
   },
 );
-
-async function write(update: DeepPartial<HostedGame>) {
-  const e = engagement.value;
-  if (!e) return;
-  error.value = "";
-  await store.updateGame(e, { ...update, lastActive: "$now" });
-}
 
 async function lockFleet(fleet: number[][]) {
   const e = engagement.value;
   if (!e || busy.value) return;
   busy.value = true;
-  const ships = gridFromCells(fleet.flat());
+  error.value = "";
   try {
-    await write(
-      e.isHost
-        ? { config: { hostUnset: [], hostShips: ships, hostFleet: fleet }, status: { hostSetup: true } }
-        : { config: { guestUnset: [], guestShips: ships, guestFleet: fleet }, status: { guestSetup: true } },
-    );
+    await store.lockFleet(e, fleet);
   } catch (err) {
     console.log(err);
     error.value = "Could not lock in your fleet. Check your connection and try again.";
@@ -62,31 +49,14 @@ async function lockFleet(fleet: number[][]) {
 
 async function fire(i: number) {
   const e = engagement.value;
-  const v = e?.view;
-  if (!e || !e.game || !v || e.phase !== "salvo" || pending.value !== null || isShot(v.myShots, i)) return;
-  pending.value = i;
-  const shots = v.myShots.map((row) => [...row]);
-  shots[Math.floor(i / SIZE)][i % SIZE] = true;
-  const log = [...v.myLog, i];
-  const finished = allSunk(v.theirShips, shots);
-  const status = { currentTurn: e.opponentId, finished };
+  if (!e || e.phase !== "salvo" || sending.value !== null || e.view.myLog.includes(i)) return;
+  sending.value = i;
+  error.value = "";
   try {
-    if (e.isHost) {
-      await write({
-        config: { hostBombs: shots, hostShotLog: log },
-        status,
-        ...(finished ? { highscore: { host: e.game.highscore.host + 1 } } : {}),
-      });
-    } else {
-      await write({
-        config: { guestBombs: shots, guestShotLog: log },
-        status,
-        ...(finished ? { highscore: { guest: e.game.highscore.guest + 1 } } : {}),
-      });
-    }
+    await store.fire(e, i);
   } catch (err) {
     console.log(err);
-    pending.value = null;
+    sending.value = null;
     error.value = "That shot did not go through. Try again.";
   }
 }
@@ -95,6 +65,7 @@ async function rematch() {
   const e = engagement.value;
   if (!e || busy.value) return;
   busy.value = true;
+  error.value = "";
   try {
     await store.rematch(e);
   } catch (err) {
@@ -106,10 +77,7 @@ async function rematch() {
 }
 
 // Each game of a series gets a fresh setup screen.
-const round = computed(() => {
-  const v = engagement.value?.view;
-  return v ? v.myScore + v.theirScore + (v.finished ? 0 : 1) : 1;
-});
+const round = computed(() => engagement.value?.view.round ?? 1);
 </script>
 
 <template>
@@ -141,16 +109,16 @@ const round = computed(() => {
           <span
             v-if="engagement.phase === 'deploy'"
             class="ml-auto inline-flex items-center gap-2"
-            :class="engagement.view?.opponentSetup ? 'text-sonar-cyan' : 'text-sonar-muted'"
+            :class="engagement.view.opponentSetup ? 'text-sonar-cyan' : 'text-sonar-muted'"
           >
             <span
               class="h-2 w-2 rounded-full"
-              :class="engagement.view?.opponentSetup ? 'bg-sonar-cyan shadow-[0_0_8px_#46E3D2]' : 'bg-sonar-edge'"
+              :class="engagement.view.opponentSetup ? 'bg-sonar-cyan shadow-[0_0_8px_#46E3D2]' : 'bg-sonar-edge'"
             ></span>
-            {{ engagement.view?.opponentSetup ? "ENEMY FLEET DEPLOYED" : "ENEMY DEPLOYING" }}
+            {{ engagement.view.opponentSetup ? "ENEMY FLEET DEPLOYED" : "ENEMY DEPLOYING" }}
           </span>
           <span
-            v-else-if="engagement.view"
+            v-else
             class="ml-auto inline-flex items-baseline gap-2.5"
             :aria-label="`Series score: you ${engagement.view.myScore}, ${opponentName} ${engagement.view.theirScore}`"
           >
@@ -179,14 +147,10 @@ const round = computed(() => {
         </template>
       </section>
 
-      <section v-else-if="engagement.game === null" class="panel mx-auto max-w-[560px]">
+      <section v-else-if="engagement.theirs === null" class="panel mx-auto max-w-[560px]">
         <h1 class="hd m-0 text-xl text-sonar-bright">Game unavailable</h1>
         <p class="mb-4 text-sonar-muted">{{ opponentName }} removed this game, or it is no longer shared with you.</p>
         <RouterLink :to="{ name: 'home' }" class="btn-outline">Back to engagements</RouterLink>
-      </section>
-
-      <section v-else-if="!engagement.view || !engagement.phase" class="panel mx-auto max-w-[560px]" role="status">
-        <h1 class="hd m-0 text-xl text-sonar-bright">Establishing contact…</h1>
       </section>
 
       <FleetSetup
@@ -203,7 +167,7 @@ const round = computed(() => {
         :view="engagement.view"
         :phase="engagement.phase"
         :opponent-name="opponentName"
-        :pending="pending"
+        :sending="sending"
         :busy="busy"
         @fire="fire"
         @rematch="rematch"
